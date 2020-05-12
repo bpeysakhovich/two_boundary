@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.io as sio
 
 # stimulus directions (conditios file order)
 dirs = [247.5, 225, 202.5, 67.5, 45, 22.5, 157.5, 135, 112.5, 337.5, 315, 292.5]
@@ -10,10 +11,12 @@ ord_dirs = [dirs[i] for i in ord_ind]
 
 # Get mean accuracy per direction, per session
 def perf_per_dir(filelist):
+
+    n_files = len(filelist)
+
     # Pre-allocate to store  accuracy per direction directions for each file
     acc_all = [np.zeros([n_dirs]) for i in range(n_files)]
 
-    n_files = len(filelist)
     for i_file, file in enumerate(filelist):
 
         acc = np.zeros([2, n_dirs])

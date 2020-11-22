@@ -1,13 +1,10 @@
 import numpy as np
 import scipy.io as sio
+from constant_variables import *
 
-# stimulus directions (conditios file order)
-dirs = [247.5, 225, 202.5, 67.5, 45, 22.5, 157.5, 135, 112.5, 337.5, 315, 292.5]
-n_dirs = len(dirs)
 # ordered by num
-ord_ind = np.argsort(dirs)
-ord_dirs = [dirs[i] for i in ord_ind]
-
+ord_ind = np.argsort(DIRS)
+ord_dirs = [DIRS[i] for i in ord_ind]
 
 # Get mean accuracy per direction, per session
 def perf_per_dir(filelist):
@@ -15,11 +12,11 @@ def perf_per_dir(filelist):
     n_files = len(filelist)
 
     # Pre-allocate to store  accuracy per direction directions for each file
-    acc_all = [np.zeros([n_dirs]) for i in range(n_files)]
+    acc_all = [np.zeros([N_DIRS]) for i in range(n_files)]
 
     for i_file, file in enumerate(filelist):
 
-        acc = np.zeros([2, n_dirs])
+        acc = np.zeros([2, N_DIRS])
 
         bhv = sio.loadmat(file)['data']['BHV']
         code_numbers = bhv[0][0][0][0][7][0]
@@ -30,7 +27,7 @@ def perf_per_dir(filelist):
         n_trials = len(errors)
 
         for i_trial in range(n_trials):
-            if code_numbers[i_trial][1][0] != 14 and conditions[i_trial] != 73:
+            if code_numbers[i_trial][1][0] != MS_STIM_ON and conditions[i_trial] != PV_COND:
                 if errors[i_trial] == 0:
                     acc[0, dir_nums[i_trial]] += 1
                     acc[1, dir_nums[i_trial]] += 1
@@ -42,8 +39,8 @@ def perf_per_dir(filelist):
     acc_mean = np.mean(acc_all, 0)
     acc_std = np.std(acc_all, 0)
 
-    acc_mean = [x for _,x in sorted(zip(dirs, acc_mean))]
-    acc_std = [x for _,x in sorted(zip(dirs, acc_std))]
+    acc_mean = [x for _,x in sorted(zip(DIRS, acc_mean))]
+    acc_std = [x for _,x in sorted(zip(DIRS, acc_std))]
 
     return acc_all, acc_mean, acc_std
 
@@ -65,8 +62,6 @@ def beh_same_opp_quad(filelist):
         error     = [i[0] for i in bhv[0][0][0][0]["TrialError"]]
         trial_num = len(bhv[0][0][0][0]["TrialNumber"][0])
         condition = bhv[0][0][0][0]["ConditionNumber"][0]
-
-        dirs         = [247.5, 225, 202.5, 67.5, 45, 22.5, 157.5, 135, 112.5, 337.5, 315, 292.5]
 
         error_match_sameqd = []
         error_match_oppqd = []

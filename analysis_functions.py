@@ -8,17 +8,133 @@ import math
 from scipy import stats
 import glob
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit
+from random import sample
 from sklearn.svm import SVC # "Support Vector Classifier"
 import shutil
 import os
 from sklearn.metrics import roc_auc_score
-
+import itertools
+from os import path
+from scipy.ndimage import gaussian_filter1d
+from constant_variables import *
+from matplotlib.patches import Ellipse
+import matplotlib.transforms as transforms
 
 """ GENERAL UTILITY FUNCTIONS """
 
-def get_epoch_means(all_spikes, indx):
+def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
+    """
+    Create a plot of the covariance confidence ellipse of *x* and *y*.
 
+    Parameters
+    ----------
+    x, y : array-like, shape (n, )
+        Input data.
+
+    ax : matplotlib.axes.Axes
+        The axes object to draw the ellipse into.
+
+    n_std : float
+        The number of standard deviations to determine the ellipse's radiuses.
+
+    **kwargs
+        Forwarded to `~matplotlib.patches.Ellipse`
+
+    Returns
+    -------
+    matplotlib.patches.Ellipse
+    """
+    if x.size != y.size:
+        raise ValueError("x and y must be the same size")
+
+    cov = np.cov(x, y)
+    pearson = cov[0, 1]/np.sqrt(cov[0, 0] * cov[1, 1])
+    # Using a special case to obtain the eigenvalues of this
+    # two-dimensionl dataset.
+    ell_radius_x = np.sqrt(1 + pearson)
+    ell_radius_y = np.sqrt(1 - pearson)
+    ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2,
+                      facecolor=facecolor, **kwargs)
+
+    # Calculating the stdandard deviation of x from
+    # the squareroot of the variance and multiplying
+    # with the given number of standard deviations.
+    scale_x = np.sqrt(cov[0, 0]) * n_std
+    mean_x = np.mean(x)
+
+    # calculating the stdandard deviation of y ...
+    scale_y = np.sqrt(cov[1, 1]) * n_std
+    mean_y = np.mean(y)
+
+    transf = transforms.Affine2D() \
+        .rotate_deg(45) \
+        .scale(scale_x, scale_y) \
+        .translate(mean_x, mean_y)
+
+    ellipse.set_transform(transf + ax.transData)
+    return ax.add_patch(ellipse)
+
+
+
+def org_data_by_dir(data_by_cond):
+
+    n_conds_per_dir = int(N_CONDS_DMC/N_DIRS)
+
+    tmpdirs = np.arange(0, N_CONDS_DMC, n_conds_per_dir)
+    data_by_dir = [[] for i in range(N_DIRS)]
+    for ii, val in enumerate(tmpdirs):
+        data_by_dir[ii] = np.vstack([ii for ii in data_by_cond[val:val+n_conds_per_dir] if len(ii)> 0])
+
+    return data_by_dir
+
+def org_data_by_cat(data_by_cond):
+
+    n_conds_per_cat = int(N_CONDS_DMC/2)
+
+    tmpdirs = np.arange(0, N_CONDS_DMC, n_conds_per_cat)
+    data_by_cat = [[] for i in range(2)]
+    for ii, val in enumerate(tmpdirs):
+        data_by_cat[ii] = np.vstack([ii for ii in data_by_cond[val:val+n_conds_per_cat] if len(ii)> 0])
+
+    return data_by_cat
+
+def org_data_by_test(data):
+
+    data_by_test = [[] for i in range(4)]
+    data_by_test_and_sample_cat = [[] for i in range(8)]
+
+    # 45, 225, 135, 315
+    test_conds = [[2,8,15,20,26,31,40,42,46,48,52,54,58,60,64,66,70,72],
+                  [1,7,13,20,26,32,39,41,45,47,51,53,57,59,63,65,69,71],
+                  [3,5,9,11,15,17,22,24,28,30,34,36,37,43,49,56,62,68],
+                  [4,6,10,12,16,18,21,23,27,29,33,35,38,44,50,55,61,67]]
+
+    test_conds_sample_cat = [[1,7,13,20,26,32], [39,41,45,47,51,53,57,59,63,65,69,71],
+                         [2,8,15,20,26,31], [40,42,46,48,52,54,58,60,64,66,70,72],
+                         [37,43,49,56,62,68], [3,5,9,11,15,17,22,24,28,30,34,36],
+                         [38,44,50,55,61,67], [4,6,10,12,16,18,21,23,27,29,33,35]]
+
+    for i, conds in enumerate(test_conds):
+        data_by_test[i] = np.vstack([data[ii-1] for ii in conds if len(data[ii-1]) > 0])
+
+    for i, conds in enumerate(test_conds_sample_cat):
+        data_by_test_and_sample_cat[i] = np.vstack([data[ii-1] for ii in conds if len(data[ii-1]) > 0])
+
+    return data_by_test, data_by_test_and_sample_cat
+
+
+def plot_trial_epochs(TRIAL_EPOCHS, ax):
+    ax.plot([0, 0], [0, 100], '--k', lw = 1.3)
+    ax.plot([TRIAL_EPOCHS[0], TRIAL_EPOCHS[0]], [0, 100], '--k', lw = 1.3)
+    ax.plot([TRIAL_EPOCHS[1], TRIAL_EPOCHS[1]], [0, 100], '--k', lw = 1.3)
+    ax.plot([TRIAL_EPOCHS[2], TRIAL_EPOCHS[2]], [0, 100], '--k', lw = 1.3)
+    ax.plot([TRIAL_EPOCHS[3], TRIAL_EPOCHS[3]], [0, 100], '--k', lw = 1.3)
+    ax.plot([TRIAL_EPOCHS[4], TRIAL_EPOCHS[4]],  [0, 100], '--k', lw = 1.3)
+
+    return ax
+
+def get_epoch_means(all_spikes, indx):
     n_trials = np.size(all_spikes, 0)
     all_trials = np.zeros(n_trials)
     for i_trial in range(n_trials):
@@ -37,20 +153,18 @@ def epoch_inds(bins, time1, time2):
     return indx
 
 def make_dirs(path):
-
     import os
 
     if not os.path.exists(path):
         os.makedirs(path)
 
 def max_consecutive_vals(data, value, thresh):
-
     indx_thresh = []
 
     counter = 0
     longest_run = 0
-    for i, val in enumerate(data[0:-1]):
-        if val == value and data[i+1] == value:
+    for i, val in enumerate(data[:-1]):
+        if val >= value and data[i+1] >= value:
             if counter == 0:
                 counter = 2
             else:
@@ -93,15 +207,15 @@ def shuffle_pev(data_group1, data_group2, n_perms):
 
     return pval
 
-def shuffle_decoder(data_group1, data_group2, n_perms):
+def shuffle_decoder(data_group1, data_group2, n_perms, brain_areas):
 
-    pvals = np.zeros(3)
-    for i in range(3):
+    pvals = {}
 
-        true_diff = abs(np.median(data_group1[i])-np.median(data_group2[i]))
+    for area in brain_areas:
+        true_diff = abs(np.mean(data_group1[area])-np.mean(data_group2[area]))
         all_means = np.zeros(n_perms)
 
-        combined = np.hstack([data_group1[i], data_group2[i]])
+        combined = np.hstack([data_group1[area], data_group2[area]])
         n_samples = int(len(combined)/2)
 
         for i_perm in range(n_perms):
@@ -110,9 +224,39 @@ def shuffle_decoder(data_group1, data_group2, n_perms):
             group1 = perm[0:n_samples]
             group2 = perm[n_samples:len(perm)]
 
-            all_means[i_perm] = (np.median(group1)-np.median(group2))
+            all_means[i_perm] = (np.mean(group1)-np.mean(group2))
 
-        pvals[i] = sum(abs(all_means) >= abs(true_diff))/n_perms
+        pvals[area] = sum(abs(all_means) >= abs(true_diff))/n_perms
+
+    return pvals
+
+def shuffle_decoder_epoch_pv(data, n_perms, brain_areas, comparison = 'mean'):
+
+    pvals = {}
+
+    for area in brain_areas:
+        if comparison == 'mean':
+            true_diff = abs(np.mean(data[area]['DMC'])-np.mean(data[area]['PV']))
+        elif comparison == 'median':
+            true_diff = abs(np.median(data[area]['DMC'])-np.median(data[area]['PV']))
+
+        all_means = np.zeros(n_perms)
+
+        combined = np.hstack([data[area]['DMC'], data[area]['PV']])
+        n_samples = int(len(combined)/2)
+
+        for i_perm in range(n_perms):
+            perm = np.random.permutation(combined)
+
+            group1 = perm[0:n_samples]
+            group2 = perm[n_samples:len(perm)]
+
+            if comparison == 'mean':
+                all_means[i_perm] = (np.mean(group1)-np.mean(group2))
+            elif comparison == 'median':
+                all_means[i_perm] = (np.median(group1)-np.median(group2))
+
+        pvals[area] = sum(abs(all_means) >= abs(true_diff))/n_perms
 
     return pvals
 
@@ -144,16 +288,28 @@ def label_diff(i,j,text,X,Y):
     ax.annotate('', xy=(X[i],y), xytext=(X[j],y), arrowprops=props)
 
 
+def get_sigtext(curr_pval):
+    if curr_pval > 0.05:
+        sigtext = 'n.s'
+    elif curr_pval <= 0.05 and curr_pval > 0.01:
+        sigtext = '*'
+    elif curr_pval <= 0.01 and curr_pval > 0.005:
+        sigtext = '**'
+    elif curr_pval <= 0.005 and curr_pval > 0.005:
+        sigtext = '***'
+    else:
+        sigtext = '****'
+
+    return sigtext
+
 """ PSTH AND TASK_RESPONSIVE CELLS FUNCTIONS """
 ### Generatae psth
 ## Output: raw_spikes, mean_psth, mean_psth_sm, psth_binned, trials_per_dir
-def get_psth(spikes, errors, trial_starts, conditions, code_numbers, code_times, stim_on, bins, std = 30, bin_size = 1):
+def get_psth(spikes, errors, trial_starts, conditions, code_numbers, code_times, bins, std = 30, bin_size = 1):
 
     spikes = np.array(spikes)
 
-    from scipy.ndimage import gaussian_filter1d
     n_conds = 72
-    n_dirs = 12
 
     raw_spikes = [[] for i in range(n_conds)]
     psth_binned = [[] for i in range(n_conds)]
@@ -162,21 +318,21 @@ def get_psth(spikes, errors, trial_starts, conditions, code_numbers, code_times,
 
     for i_trial in range(n_trials):
 
-        condition_num = conditions[i_trial]-1
+        condition_num = conditions[i_trial]
         dir_num = int(np.ceil(condition_num/6))-1
         cat_num = int(np.floor(condition_num/37))
 
         trial_start_indx = trial_starts[i_trial]
         trial_start_time = code_times[trial_start_indx]
 
-        if errors[i_trial] == 0 and condition_num != 73 and code_numbers[trial_start_indx+1] != 14 and code_numbers[trial_start_indx+1] != 1:
+        if errors[i_trial] == 0 and condition_num != PV_COND and code_numbers[trial_start_indx+1] != MS_STIM_ON and code_numbers[trial_start_indx+1] != 1:
 
-            if trial_start_time > spikes[0] & trial_start_time < spikes[-1]:
+            if trial_start_time > spikes[0] and trial_start_time < spikes[-1]:
 
                 if i_trial != n_trials-1:
-                    samp_on_indx = [i+trial_start_indx for i, val in enumerate(code_numbers[trial_start_indx:trial_starts[i_trial+1]]) if val == stim_on][0]
+                    samp_on_indx = [i+trial_start_indx for i, val in enumerate(code_numbers[trial_start_indx:trial_starts[i_trial+1]]) if val == SAMP_ON][0]
                 else:
-                    samp_on_indx = [i+trial_start_indx for i, val in enumerate(code_numbers[trial_start_indx:]) if val == stim_on][0]
+                    samp_on_indx = [i+trial_start_indx for i, val in enumerate(code_numbers[trial_start_indx:]) if val == SAMP_ON][0]
                 samp_on_time = code_times[samp_on_indx]
 
                 t1 = spikes[spikes > samp_on_time-abs(bins[0])]
@@ -184,9 +340,9 @@ def get_psth(spikes, errors, trial_starts, conditions, code_numbers, code_times,
                 spike_times = np.intersect1d(t1, t2) - samp_on_time
 
                 binned = np.histogram(spike_times, bins)[0]
-                raw_spikes[condition_num].append(binned)
+                raw_spikes[condition_num-1].append(binned)
 
-                psth_binned[condition_num].append(np.convolve(binned, np.ones(bin_size), 'same'))
+                psth_binned[condition_num-1].append(np.convolve(binned, np.ones(bin_size), 'same'))
 
     mean_psth = np.zeros([n_conds, len(bins)-1])
     for i, curr_spikes in enumerate(raw_spikes):
@@ -198,15 +354,17 @@ def get_psth(spikes, errors, trial_starts, conditions, code_numbers, code_times,
     for i_cond, curr_spikes in enumerate(mean_psth):
         mean_psth_sm[i_cond] = gaussian_filter1d(mean_psth[i_cond], std)
 
-
-    trials_per_dir = np.zeros(n_dirs)
+    trials_per_dir = np.zeros(N_DIRS)
     for i, val in enumerate(np.arange(0, 72, 6)):
-        trials_per_dir[i] = len(np.vstack([ii for ii in raw_spikes[val:val+6] if len(ii)> 0]))
+        if len([ii for ii in raw_spikes[val:val+6] if len(ii)> 0]) > 0:
+            trials_per_dir[i] = len(np.vstack([ii for ii in raw_spikes[val:val+6] if len(ii)> 0]))
+        else:
+            trials_per_dir[i] = 0
 
     return raw_spikes, mean_psth, mean_psth_sm, psth_binned, trials_per_dir
 
 
-def get_task_responsive_cells(filelist, bins, trial_epochs, currfigpath):
+def get_task_responsive_cells(filelist, bins, currfigpath):
 
     if not os.path.exists('task_responsive'):
         os.makedirs('task_responsive')
@@ -226,10 +384,10 @@ def get_task_responsive_cells(filelist, bins, trial_epochs, currfigpath):
     bins = np.array(bins)
 
     indx_baseline = epoch_inds(bins, -400, -200)
-    indx_samp = epoch_inds(bins, 0, trial_epochs[0])
-    indx_delay1 = epoch_inds(bins, trial_epochs[0], trial_epochs[1]-600)
-    indx_delay2 = epoch_inds(bins, trial_epochs[1]-600, trial_epochs[1])
-    indx_test1 = epoch_inds(bins, trial_epochs[1], trial_epochs[2])
+    indx_samp = epoch_inds(bins, 0, TRIAL_EPOCHS[0])
+    indx_delay1 = epoch_inds(bins, TRIAL_EPOCHS[0], TRIAL_EPOCHS[1]-600)
+    indx_delay2 = epoch_inds(bins, TRIAL_EPOCHS[1]-600, TRIAL_EPOCHS[1])
+    indx_test1 = epoch_inds(bins, TRIAL_EPOCHS[1], TRIAL_EPOCHS[2])
 
     all_pvals = []
     mean_fr = []
@@ -252,7 +410,7 @@ def get_task_responsive_cells(filelist, bins, trial_epochs, currfigpath):
         mean_fr.append(max(mean_per_epoch))
         all_pvals.append(pval)
 
-        if pval <= 0.01 and max(mean_per_epoch) > 0.5:
+        if pval <= 0.05 and max(mean_per_epoch) > 0.5:
             destination_mat = 'task_responsive\\' + file
             destination_png = figpath_resp + file[0:-3] + 'png'
         else:
@@ -274,690 +432,240 @@ def get_task_responsive_cells(filelist, bins, trial_epochs, currfigpath):
 
 """ DECODING FUNCTIONS """
 
-def category_decoder(n_iter, time_points, n_neurons_decoder, n_neurons_total, n_trials, filelist):
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
+def category_decoder(all_data, n_iter, timepoints, n_neurons_decoder, n_neurons_total, n_trials_per_dir, equal_n_per_dir = True):
 
+    # equal_n_per_dir: ensure that the training/testing set contains and equal number of trials per direction within a single category
     clf = SVC(kernel='linear')
 
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11], [0, 1, 2, 9, 10, 11], [3, 4, 5, 6, 7, 8]]
-    test_dir_all = [[3, 4, 5, 9, 10, 11], [0, 1, 2, 6, 7, 8], [3, 4, 5, 6, 7, 8], [0, 1, 2, 9, 10, 11]]
-
-    perf_all = np.zeros([n_iter, len(time_points)])
-
-    for iteration in range(0, n_iter):
-        indx = np.random.randint(0, 4)
-        train_dir = train_dir_all[indx]
-        test_dir = test_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder, 3549]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder, 3549]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder, 3549]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder, 3549]) for i in range(n_trials)]
-
-        neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
-
-        for i, neuron in enumerate(neurons):
-            file = filelist[neuron]
-            data_by_cond = sio.loadmat(file)['binned_spikes'][0]
-
-            tmpdirs = np.arange(0, 72, 6)
-            data = [[] for i in range(12)]
-            for ii, val in enumerate(tmpdirs):
-                data[ii] = np.vstack([ii for ii in data_by_cond[val:val+6] if len(ii)> 0])
-
-            all_trials_train_c1 = np.vstack([data[train_dir[0]], data[train_dir[1]], data[train_dir[2]]])
-            all_trials_train_c2 = np.vstack([data[train_dir[3]], data[train_dir[4]], data[train_dir[5]]])
-
-            all_trials_test_c1 = np.vstack([data[test_dir[0]], data[test_dir[1]], data[test_dir[2]]])
-            all_trials_test_c2 = np.vstack([data[test_dir[3]], data[test_dir[4]], data[test_dir[5]]])
-
-            train_trials_c1 = np.random.choice(len(all_trials_train_c1), n_trials, replace=False)
-            train_trials_c2 = np.random.choice(len(all_trials_train_c2), n_trials, replace=False)
-
-            test_trials_c1 = np.random.choice(len(all_trials_test_c1), n_trials, replace=False)
-            test_trials_c2 = np.random.choice(len(all_trials_test_c2), n_trials, replace=False)
-
-            c1_train = np.vstack([all_trials_train_c1[i] for i in train_trials_c1])
-            c2_train = np.vstack([all_trials_train_c2[i] for i in train_trials_c2])
-
-            c1_test = np.vstack([all_trials_test_c1[i] for i in test_trials_c1])
-            c2_test = np.vstack([all_trials_test_c2[i] for i in test_trials_c2])
-
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i] = c1_train[i_trial]
-                train_data_c2[i_trial][i] = c2_train[i_trial]
-
-                test_data_c1[i_trial][i] = c1_test[i_trial]
-                test_data_c2[i_trial][i] = c2_test[i_trial]
-
-        perf = np.zeros([len(time_points)])
-
-        for i, timepoint in enumerate(time_points):
-
-            x = np.zeros([n_neurons_decoder, n_trials*2])
-            y = np.zeros([n_trials*2])
-
-            for i_trial in range(n_trials):
-                x[:, i_trial] = train_data_c1[i_trial][:, timepoint]
-                y[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials] = train_data_c2[i_trial][:, timepoint]
-                y[i_trial+n_trials] = 2
-
-            x_test = np.zeros([n_neurons_decoder, n_trials*2])
-            y_test = np.zeros([n_trials*2])
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial] = test_data_c1[i_trial][:, timepoint]
-                y_test[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:, timepoint]
-                y_test[i_trial+n_trials] = 2
-
-            clf.fit(x.T, y)
-
-            if i == 240:
-                clf240 = clf
-
-            pred = clf.predict(x_test.T)
-            perf[i] = sum(pred == y_test)/len(y_test)*100
-
-        perf_all[iteration] = perf
-
-    return perf_all, clf240
-
-
-def direction_decoder(n_iter, time_points, n_neurons_decoder, n_neurons_total):
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
-
-    clf = SVC(kernel='linear')
-    perf_all = np.zeros([n_iter, len(time_points)])
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-    test_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-
-    for iteration in range(0, n_iter):
-        indx = np.random.randint(0, 2)
-        train_dir = train_dir_all[indx]
-        test_dir = train_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        train_data_c3 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        train_data_c4 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        train_data_c5 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        train_data_c6 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        test_data_c3 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        test_data_c4 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        test_data_c5 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-        test_data_c6 = [np.zeros([n_neurons_decoder, 3549-100]) for i in range(n_trials)]
-
-        neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
-
-        for i, neuron in enumerate(neurons):
-            file = filelist[neuron]
-            data_by_cond = sio.loadmat(file)['binned_spikes'][0]
-
-            tmpdirs = np.arange(0, 72, 6)
-            data = [[] for i in range(12)]
-            for ii, val in enumerate(tmpdirs):
-                data[ii] = np.vstack([ii for ii in data_by_cond[val:val+6] if len(ii)> 0])
-
-            trials_c1 = np.random.choice(len(data[train_dir[0]]), n_trials*2, replace=False)
-            trials_c2 = np.random.choice(len(data[train_dir[1]]), n_trials*2, replace=False)
-            trials_c3 = np.random.choice(len(data[train_dir[2]]), n_trials*2, replace=False)
-            trials_c4 = np.random.choice(len(data[train_dir[3]]), n_trials*2, replace=False)
-            trials_c5 = np.random.choice(len(data[train_dir[4]]), n_trials*2, replace=False)
-            trials_c6 = np.random.choice(len(data[train_dir[5]]), n_trials*2, replace=False)
-
-            c1_train = np.vstack([data[train_dir[0]][i] for i in trials_c1[0:n_trials]])
-            c2_train = np.vstack([data[train_dir[1]][i] for i in trials_c2[0:n_trials]])
-            c3_train = np.vstack([data[train_dir[2]][i] for i in trials_c3[0:n_trials]])
-            c4_train = np.vstack([data[train_dir[3]][i] for i in trials_c4[0:n_trials]])
-            c5_train = np.vstack([data[train_dir[4]][i] for i in trials_c5[0:n_trials]])
-            c6_train = np.vstack([data[train_dir[5]][i] for i in trials_c6[0:n_trials]])
-
-            c1_test = np.vstack([data[train_dir[0]][i] for i in trials_c1[n_trials:]])
-            c2_test = np.vstack([data[train_dir[1]][i] for i in trials_c2[n_trials:]])
-            c3_test = np.vstack([data[train_dir[2]][i] for i in trials_c3[n_trials:]])
-            c4_test = np.vstack([data[train_dir[3]][i] for i in trials_c4[n_trials:]])
-            c5_test = np.vstack([data[train_dir[4]][i] for i in trials_c5[n_trials:]])
-            c6_test = np.vstack([data[train_dir[5]][i] for i in trials_c6[n_trials:]])
-
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i_neuron] = c1_train[i_trial]
-                train_data_c2[i_trial][i_neuron] = c2_train[i_trial]
-                train_data_c3[i_trial][i_neuron] = c3_train[i_trial]
-                train_data_c4[i_trial][i_neuron] = c4_train[i_trial]
-                train_data_c5[i_trial][i_neuron] = c5_train[i_trial]
-                train_data_c6[i_trial][i_neuron] = c6_train[i_trial]
-
-                test_data_c1[i_trial][i_neuron] = c1_test[i_trial]
-                test_data_c2[i_trial][i_neuron] = c2_test[i_trial]
-                test_data_c3[i_trial][i_neuron] = c3_test[i_trial]
-                test_data_c4[i_trial][i_neuron] = c4_test[i_trial]
-                test_data_c5[i_trial][i_neuron] = c5_test[i_trial]
-                test_data_c6[i_trial][i_neuron] = c6_test[i_trial]
-
-        perf = np.zeros([len(time_points)])
-
-        for i, timepoint in enumerate(time_points):
-
-            x = np.zeros([n_neurons_decoder, n_trials*6])
-            y = np.zeros([n_trials*6])
-
-            for i_trial in range(n_trials):
-                x[:, i_trial] = train_data_c1[i_trial][:, timepoint]
-                y[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials] = train_data_c2[i_trial][:, timepoint]
-                y[i_trial+n_trials] = 2
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*2] = train_data_c3[i_trial][:, timepoint]
-                y[i_trial+n_trials*2] = 3
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*3] = train_data_c4[i_trial][:, timepoint]
-                y[i_trial+n_trials*3] = 4
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*4] = train_data_c5[i_trial][:, timepoint]
-                y[i_trial+n_trials*4] = 5
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*5] = train_data_c6[i_trial][:, timepoint]
-                y[i_trial+n_trials*5] = 6
-
-            x_test = np.zeros([n_neurons_decoder, n_trials*6])
-            y_test = np.zeros([n_trials*6])
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial] = test_data_c1[i_trial][:, timepoint]
-                y_test[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:, timepoint]
-                y_test[i_trial+n_trials] = 2
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*2] = test_data_c3[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*2] = 3
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*3] = test_data_c4[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*3] = 4
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*4] = test_data_c5[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*4] = 5
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*5] = test_data_c6[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*5] = 6
-
-            clf.fit(x.T, y)
-
-            pred = clf.predict(x_test.T)
-            perf[i] = sum(pred == y_test)/len(y_test)*100
-
-        perf_all[iteration] = perf
-    return perf_all
-
-def category_decoder_epoch(all_data, n_iter, n_neurons_decoder, n_neurons_total, n_trials):
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
-
-    clf = SVC(kernel='linear')
-
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11], [0, 1, 2, 9, 10, 11], [3, 4, 5, 6, 7, 8]]
-    test_dir_all = [[3, 4, 5, 9, 10, 11], [0, 1, 2, 6, 7, 8], [3, 4, 5, 6, 7, 8], [0, 1, 2, 9, 10, 11]]
-
-    perf = np.zeros(n_iter)
-
-    for iteration in range(0, n_iter):
-        indx = np.random.randint(0, 4)
-        train_dir = train_dir_all[indx]
-        test_dir = test_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-
-        neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
-
-        for i, data in enumerate(all_data):
-
-            all_trials_train_c1 = np.hstack([data[train_dir[0]], data[train_dir[1]], data[train_dir[2]]])
-            all_trials_train_c2 = np.hstack([data[train_dir[3]], data[train_dir[4]], data[train_dir[5]]])
-
-            all_trials_test_c1 = np.hstack([data[test_dir[0]], data[test_dir[1]], data[test_dir[2]]])
-            all_trials_test_c2 = np.hstack([data[test_dir[3]], data[test_dir[4]], data[test_dir[5]]])
-
-            train_trials_c1 = np.random.choice(len(all_trials_train_c1), n_trials, replace=False)
-            train_trials_c2 = np.random.choice(len(all_trials_train_c2), n_trials, replace=False)
-
-            test_trials_c1 = np.random.choice(len(all_trials_test_c1), n_trials, replace=False)
-            test_trials_c2 = np.random.choice(len(all_trials_test_c2), n_trials, replace=False)
-
-            c1_train = np.hstack([all_trials_train_c1[i] for i in train_trials_c1])
-            c2_train = np.hstack([all_trials_train_c2[i] for i in train_trials_c2])
-
-            c1_test = np.hstack([all_trials_test_c1[i] for i in test_trials_c1])
-            c2_test = np.hstack([all_trials_test_c2[i] for i in test_trials_c2])
-
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i] = c1_train[i_trial]
-                train_data_c2[i_trial][i] = c2_train[i_trial]
-
-                test_data_c1[i_trial][i] = c1_test[i_trial]
-                test_data_c2[i_trial][i] = c2_test[i_trial]
-
-        x = np.zeros([n_neurons_decoder, n_trials*2])
-        y = np.zeros([n_trials*2])
-
-        for i_trial in range(n_trials):
-            x[:, i_trial] = train_data_c1[i_trial][:]
-            y[i_trial] = 1
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials] = train_data_c2[i_trial][:]
-            y[i_trial+n_trials] = 2
-
-        x_test = np.zeros([n_neurons_decoder, n_trials*2])
-        y_test = np.zeros([n_trials*2])
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial] = test_data_c1[i_trial][:]
-            y_test[i_trial] = 1
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:]
-            y_test[i_trial+n_trials] = 2
-
-        clf.fit(x.T, y)
-
-        pred = clf.predict(x_test.T)
-        perf[iteration] = sum(pred == y_test)/len(y_test)*100
-
-
-    return perf
-
-def direction_decoder_epoch(all_data, n_iter, n_neurons_decoder, n_neurons_total, n_trials):
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
-
-    clf = SVC(kernel='linear')
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-    test_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-
-    perf = np.zeros(n_iter)
-    for iteration in range(n_iter):
-        indx = np.random.randint(0, 2)
-        train_dir = train_dir_all[indx]
-        test_dir = train_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c3 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c4 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c5 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        train_data_c6 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c3 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c4 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c5 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-        test_data_c6 = [np.zeros([n_neurons_decoder]) for i in range(n_trials)]
-
-        neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
-
-        for i, data in enumerate(all_data):
-
-            trials_c1 = np.random.choice(len(data[train_dir[0]]), n_trials*2, replace=False)
-            trials_c2 = np.random.choice(len(data[train_dir[1]]), n_trials*2, replace=False)
-            trials_c3 = np.random.choice(len(data[train_dir[2]]), n_trials*2, replace=False)
-            trials_c4 = np.random.choice(len(data[train_dir[3]]), n_trials*2, replace=False)
-            trials_c5 = np.random.choice(len(data[train_dir[4]]), n_trials*2, replace=False)
-            trials_c6 = np.random.choice(len(data[train_dir[5]]), n_trials*2, replace=False)
-
-
-
-            c1_train = np.vstack([data[train_dir[0]][i] for i in trials_c1[0:n_trials]])
-            c2_train = np.vstack([data[train_dir[1]][i] for i in trials_c2[0:n_trials]])
-            c3_train = np.vstack([data[train_dir[2]][i] for i in trials_c3[0:n_trials]])
-            c4_train = np.vstack([data[train_dir[3]][i] for i in trials_c4[0:n_trials]])
-            c5_train = np.vstack([data[train_dir[4]][i] for i in trials_c5[0:n_trials]])
-            c6_train = np.vstack([data[train_dir[5]][i] for i in trials_c6[0:n_trials]])
-
-            c1_test = np.vstack([data[train_dir[0]][i] for i in trials_c1[n_trials:]])
-            c2_test = np.vstack([data[train_dir[1]][i] for i in trials_c2[n_trials:]])
-            c3_test = np.vstack([data[train_dir[2]][i] for i in trials_c3[n_trials:]])
-            c4_test = np.vstack([data[train_dir[3]][i] for i in trials_c4[n_trials:]])
-            c5_test = np.vstack([data[train_dir[4]][i] for i in trials_c5[n_trials:]])
-            c6_test = np.vstack([data[train_dir[5]][i] for i in trials_c6[n_trials:]])
-
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i] = c1_train[i_trial]
-                train_data_c2[i_trial][i] = c2_train[i_trial]
-                train_data_c3[i_trial][i] = c3_train[i_trial]
-                train_data_c4[i_trial][i] = c4_train[i_trial]
-                train_data_c5[i_trial][i] = c5_train[i_trial]
-                train_data_c6[i_trial][i] = c6_train[i_trial]
-
-                test_data_c1[i_trial][i] = c1_test[i_trial]
-                test_data_c2[i_trial][i] = c2_test[i_trial]
-                test_data_c3[i_trial][i] = c3_test[i_trial]
-                test_data_c4[i_trial][i] = c4_test[i_trial]
-                test_data_c5[i_trial][i] = c5_test[i_trial]
-                test_data_c6[i_trial][i] = c6_test[i_trial]
-
-        x = np.zeros([n_neurons_decoder, n_trials*6])
-        y = np.zeros([n_trials*6])
-
-        for i_trial in range(n_trials):
-            x[:, i_trial] = train_data_c1[i_trial][:]
-            y[i_trial] = 1
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials] = train_data_c2[i_trial][:]
-            y[i_trial+n_trials] = 2
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials*2] = train_data_c3[i_trial][:]
-            y[i_trial+n_trials*2] = 3
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials*3] = train_data_c4[i_trial][:]
-            y[i_trial+n_trials*3] = 4
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials*4] = train_data_c5[i_trial][:]
-            y[i_trial+n_trials*4] = 5
-
-        for i_trial in range(n_trials):
-            x[:, i_trial+n_trials*5] = train_data_c6[i_trial][:]
-            y[i_trial+n_trials*5] = 6
-
-        x_test = np.zeros([n_neurons_decoder, n_trials*6])
-        y_test = np.zeros([n_trials*6])
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial] = test_data_c1[i_trial][:]
-            y_test[i_trial] = 1
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:]
-            y_test[i_trial+n_trials] = 2
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials*2] = test_data_c3[i_trial][:]
-            y_test[i_trial+n_trials*2] = 3
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials*3] = test_data_c4[i_trial][:]
-            y_test[i_trial+n_trials*3] = 4
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials*4] = test_data_c5[i_trial][:]
-            y_test[i_trial+n_trials*4] = 5
-
-        for i_trial in range(n_trials):
-            x_test[:, i_trial+n_trials*5] = test_data_c6[i_trial][:]
-            y_test[i_trial+n_trials*5] = 6
-
-
-        clf.fit(x.T, y)
-
-        pred = clf.predict(x_test.T)
-        perf[iteration] = sum(pred == y_test)/len(y_test)*100
-
-    return perf
-
-def category_decoder_PV(n_iter, time_points, n_neurons_decoder, n_neurons_total, n_trials, all_data):
-
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
-    neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
-    clf = SVC(kernel='linear')
-    time_points = np.arange(0, len(window))
-    decoder_timepoints = np.arange(0, len(window), 10)
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11], [0, 1, 2, 9, 10, 11], [3, 4, 5, 6, 7, 8]]
-    test_dir_all = [[3, 4, 5, 9, 10, 11], [0, 1, 2, 6, 7, 8], [3, 4, 5, 6, 7, 8], [0, 1, 2, 9, 10, 11]]
-
+    # Run decoder every 10ms
+    n_timepoints = len(timepoints)-1
+    decoder_timepoints = np.arange(0, n_timepoints, 10)
+
+    # Number trials per class (category)
+    n_dirs_per_class = 3
+    n_trials_train = n_trials_per_dir*n_dirs_per_class
+
+    # Define quadrants for training/testing (4 possible combinations)
+    all_configs = {}
+    all_configs['train_data_c1'] = [[0, 1, 2], [3, 4, 5], [0, 1, 2], [3, 4, 5]]
+    all_configs['train_data_c2'] = [[6, 7, 8], [9, 10, 11], [9, 10, 11], [6, 7, 8]]
+    all_configs['test_data_c1'] = [[3, 4, 5], [0, 1, 2], [3, 4, 5], [0, 1, 2]]
+    all_configs['test_data_c2'] = [[9, 10, 11], [6, 7, 8], [6, 7, 8], [9, 10, 11]]
+    groups = ['train_data_c1', 'train_data_c2', 'test_data_c1', 'test_data_c2']
+
+    # Pre-allocate to save decoder performance
     perf_all = np.zeros([n_iter, len(decoder_timepoints)])
 
     for iteration in range(0, n_iter):
 
-        indx = np.random.randint(0, 4)
-        train_dir = train_dir_all[indx]
-        test_dir = test_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-
-        for i, neuron in enumerate(neurons):
-            data = all_data[neuron]
-
-            all_trials_train_c1 = np.vstack([data[train_dir[0]], data[train_dir[1]], data[train_dir[2]]])
-            all_trials_train_c2 = np.vstack([data[train_dir[3]], data[train_dir[4]], data[train_dir[5]]])
-
-            all_trials_test_c1 = np.vstack([data[test_dir[0]], data[test_dir[1]], data[test_dir[2]]])
-            all_trials_test_c2 = np.vstack([data[test_dir[3]], data[test_dir[4]], data[test_dir[5]]])
-
-            train_trials_c1 = np.random.choice(len(all_trials_train_c1), n_trials, replace=False)
-            train_trials_c2 = np.random.choice(len(all_trials_train_c2), n_trials, replace=False)
-
-            test_trials_c1 = np.random.choice(len(all_trials_test_c1), n_trials, replace=False)
-            test_trials_c2 = np.random.choice(len(all_trials_test_c2), n_trials, replace=False)
-
-            c1_train = np.vstack([all_trials_train_c1[i] for i in train_trials_c1])
-            c2_train = np.vstack([all_trials_train_c2[i] for i in train_trials_c2])
-
-            c1_test = np.vstack([all_trials_test_c1[i] for i in test_trials_c1])
-            c2_test = np.vstack([all_trials_test_c2[i] for i in test_trials_c2])
-
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i] = c1_train[i_trial]
-                train_data_c2[i_trial][i] = c2_train[i_trial]
-
-                test_data_c1[i_trial][i] = c1_test[i_trial]
-                test_data_c2[i_trial][i] = c2_test[i_trial]
-
-
-        perf = np.zeros([len(decoder_timepoints)])
-        for i, timepoint in enumerate(decoder_timepoints):
-
-            x = np.zeros([n_neurons_decoder, n_trials*2])
-            y = np.zeros([n_trials*2])
-
-            for i_trial in range(n_trials):
-                x[:, i_trial] = train_data_c1[i_trial][:, timepoint]
-                y[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials] = train_data_c2[i_trial][:, timepoint]
-                y[i_trial+n_trials] = 2
-
-            x_test = np.zeros([n_neurons_decoder, n_trials*2])
-            y_test = np.zeros([n_trials*2])
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial] = test_data_c1[i_trial][:, timepoint]
-                y_test[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:, timepoint]
-                y_test[i_trial+n_trials] = 2
-
-            clf.fit(x.T, y)
-
-            pred = clf.predict(x_test.T)
-            perf[i] = sum(pred == y_test)/len(y_test)*100
-
-        perf_all[iteration] = perf
-
-    return perf_all
-
-def direction_decoder_PV(n_iter, time_points, n_neurons_decoder, n_neurons_total, n_trials, all_data):
-    import scipy.io as sio
-    import numpy as np
-    from sklearn.svm import SVC # "Support Vector Classifier"
-
-    time_points = np.arange(0, len(window))
-    decoder_timepoints = np.arange(0, len(window), 10)
-
-    clf = SVC(kernel='linear')
-    perf_all = np.zeros([n_iter, len(decoder_timepoints)])
-    train_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-    test_dir_all = [[0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]
-
-
-    for iteration in range(0, n_iter):
-        indx = np.random.randint(0, 2)
-        train_dir = train_dir_all[indx]
-        test_dir = train_dir_all[indx]
-
-        train_data_c1 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c2 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c3 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c4 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c5 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        train_data_c6 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-
-        test_data_c1 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c2 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c3 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c4 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c5 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-        test_data_c6 = [np.zeros([n_neurons_decoder, len(time_points)-1]) for i in range(n_trials)]
-
+        # Choose subset of neurons (if sub-sampling)
         neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
+
+        # Choose a train-test config
+        indx = np.random.randint(0, 4)
+        curr_config = {}
+        for ii, group in enumerate(groups):
+            curr_config[group] = all_configs[group][indx]
+
+        # Pre-allocate training and testing arrays
+        svm_data = {}
+        for group in groups:
+            svm_data[group] = [np.zeros([n_neurons_decoder, n_trials_train]) for i in range(n_timepoints)]
 
         for i_neuron, neuron in enumerate(neurons):
+            if n_neurons_total == 1:
+                data = all_data
+            else:
+                data = all_data[neuron]
 
-            data = all_data[neuron]
+             # Organize neuron's data by category and training/testing trials
+            for group in groups:
 
-            trials_c1 = np.random.choice(len(data[train_dir[0]]), n_trials*2, replace=False)
-            trials_c2 = np.random.choice(len(data[train_dir[1]]), n_trials*2, replace=False)
-            trials_c3 = np.random.choice(len(data[train_dir[2]]), n_trials*2, replace=False)
-            trials_c4 = np.random.choice(len(data[train_dir[3]]), n_trials*2, replace=False)
-            trials_c5 = np.random.choice(len(data[train_dir[4]]), n_trials*2, replace=False)
-            trials_c6 = np.random.choice(len(data[train_dir[5]]), n_trials*2, replace=False)
+                if equal_n_per_dir:
+                    min_nt = min([len(i) for i in [data[curr_config[group][0]], data[curr_config[group][1]], data[curr_config[group][2]]]])
 
-            c1_train = np.vstack([data[train_dir[0]][i] for i in trials_c1[0:n_trials]])
-            c2_train = np.vstack([data[train_dir[1]][i] for i in trials_c2[0:n_trials]])
-            c3_train = np.vstack([data[train_dir[2]][i] for i in trials_c3[0:n_trials]])
-            c4_train = np.vstack([data[train_dir[3]][i] for i in trials_c4[0:n_trials]])
-            c5_train = np.vstack([data[train_dir[4]][i] for i in trials_c5[0:n_trials]])
-            c6_train = np.vstack([data[train_dir[5]][i] for i in trials_c6[0:n_trials]])
+                    if min_nt >= n_trials_per_dir:
+                        inds = np.vstack([np.random.choice(len(data[ii]), n_trials_per_dir, replace= False) for ii in curr_config[group]])
+                    else:
+                        inds = np.vstack([np.random.choice(len(data[i]), n_trials_per_dir, replace= False) if len(data[i]) >= n_trials_per_dir else np.random.choice(len(data[i]), n_trials_per_dir, replace= True) for i in curr_config[group]])
 
-            c1_test = np.vstack([data[train_dir[0]][i] for i in trials_c1[n_trials:]])
-            c2_test = np.vstack([data[train_dir[1]][i] for i in trials_c2[n_trials:]])
-            c3_test = np.vstack([data[train_dir[2]][i] for i in trials_c3[n_trials:]])
-            c4_test = np.vstack([data[train_dir[3]][i] for i in trials_c4[n_trials:]])
-            c5_test = np.vstack([data[train_dir[4]][i] for i in trials_c5[n_trials:]])
-            c6_test = np.vstack([data[train_dir[5]][i] for i in trials_c6[n_trials:]])
+                    X = np.vstack([data[val][inds[i]] for i, val in enumerate(curr_config[group])])
 
-            for i_trial in range(n_trials):
-                train_data_c1[i_trial][i_neuron] = c1_train[i_trial]
-                train_data_c2[i_trial][i_neuron] = c2_train[i_trial]
-                train_data_c3[i_trial][i_neuron] = c3_train[i_trial]
-                train_data_c4[i_trial][i_neuron] = c4_train[i_trial]
-                train_data_c5[i_trial][i_neuron] = c5_train[i_trial]
-                train_data_c6[i_trial][i_neuron] = c6_train[i_trial]
+                else:
+                    curr_data = np.vstack([data[curr_config[group][0]], data[curr_config[group][1]], data[curr_config[group][2]]])
+                    X, Xt, y, yt = train_test_split(curr_data, np.zeros([len(curr_data)]), train_size = n_trials_per_class)
 
-                test_data_c1[i_trial][i_neuron] = c1_test[i_trial]
-                test_data_c2[i_trial][i_neuron] = c2_test[i_trial]
-                test_data_c3[i_trial][i_neuron] = c3_test[i_trial]
-                test_data_c4[i_trial][i_neuron] = c4_test[i_trial]
-                test_data_c5[i_trial][i_neuron] = c5_test[i_trial]
-                test_data_c6[i_trial][i_neuron] = c6_test[i_trial]
+                if n_timepoints == 1:
+                    svm_data[group][0][i_neuron][:] = np.hstack(X)
+                else:
+                    for ii in range(n_timepoints):
+                        svm_data[group][ii][i_neuron][:] = X[:, ii]
 
-        perf = np.zeros([len(decoder_timepoints)])
+        # Run decoder
+        perf = np.ones([len(decoder_timepoints)])
 
-        for i, timepoint in enumerate(decoder_timepoints):
+        for i_timepoint, timepoint in enumerate(decoder_timepoints):
 
-            x = np.zeros([n_neurons_decoder, n_trials*6])
-            y = np.zeros([n_trials*6])
+            x_train = np.hstack([svm_data['train_data_c1'][timepoint], svm_data['train_data_c2'][timepoint]])
+            y_train = np.hstack([np.zeros([n_trials_train]), np.ones([n_trials_train])])
 
-            for i_trial in range(n_trials):
-                x[:, i_trial] = train_data_c1[i_trial][:, timepoint]
-                y[i_trial] = 1
+            x_test = np.hstack([svm_data['test_data_c1'][timepoint], svm_data['test_data_c2'][timepoint]])
+            y_test = np.hstack([np.zeros([n_trials_train]), np.ones([n_trials_train])])
 
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials] = train_data_c2[i_trial][:, timepoint]
-                y[i_trial+n_trials] = 2
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*2] = train_data_c3[i_trial][:, timepoint]
-                y[i_trial+n_trials*2] = 3
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*3] = train_data_c4[i_trial][:, timepoint]
-                y[i_trial+n_trials*3] = 4
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*4] = train_data_c5[i_trial][:, timepoint]
-                y[i_trial+n_trials*4] = 5
-
-            for i_trial in range(n_trials):
-                x[:, i_trial+n_trials*5] = train_data_c6[i_trial][:, timepoint]
-                y[i_trial+n_trials*5] = 6
-
-            x_test = np.zeros([n_neurons_decoder, n_trials*6])
-            y_test = np.zeros([n_trials*6])
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial] = test_data_c1[i_trial][:, timepoint]
-                y_test[i_trial] = 1
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials] = test_data_c2[i_trial][:, timepoint]
-                y_test[i_trial+n_trials] = 2
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*2] = test_data_c3[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*2] = 3
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*3] = test_data_c4[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*3] = 4
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*4] = test_data_c5[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*4] = 5
-
-            for i_trial in range(n_trials):
-                x_test[:, i_trial+n_trials*5] = test_data_c6[i_trial][:, timepoint]
-                y_test[i_trial+n_trials*5] = 6
-
-            clf.fit(x.T, y)
+            clf.fit(x_train.T, y_train)
 
             pred = clf.predict(x_test.T)
-            perf[i] = sum(pred == y_test)/len(y_test)*100
+            perf[i_timepoint] = sum(pred == y_test)/len(y_test)*100
 
         perf_all[iteration] = perf
+
     return perf_all
+
+def direction_decoder(all_data, n_iter, timepoints, n_neurons_decoder, n_neurons_total, n_trials, k_fold = 4, ind_per_cat = False):
+
+    # ind_per_cat:
+        # True: independent decoders per category
+        # False: include all directions in single decoder
+    clf = SVC(kernel='linear')
+
+    # Run decoder every 10ms
+    n_timepoints = len(timepoints)-1
+    decoder_timepoints = np.arange(0, n_timepoints, 10)
+
+    # Pre-allocate to save decoder performance
+    perf_all = np.zeros([n_iter, len(decoder_timepoints)])
+
+    # Define directions for training/testing
+    if ind_per_cat:
+        all_configs = [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11]]
+    else:
+        all_configs = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]]
+    groups = ['train', 'test']
+
+    n_dirs_decoder = len(all_configs[0])
+    n_trials_test = int(n_trials/k_fold) * n_dirs_decoder
+    n_trials_train = (n_trials - int(n_trials/k_fold)) * n_dirs_decoder
+
+    for iteration in range(n_iter):
+
+        # Choose subset of neurons (if sub-sampling)
+        #subsampled_data = sample(all_data, n_neurons_decoder)
+        neurons = np.random.choice(n_neurons_total, n_neurons_decoder, replace=False)
+
+        # Choose category to tets on
+        indx = np.random.randint(0, 2)
+        curr_dirs = all_configs[indx]
+
+        # Pre-allocate training and testing arrays
+        svm_data = {}
+        svm_data['train'] = [np.zeros([n_neurons_decoder, n_trials_train]) for i in range(n_timepoints)]
+        svm_data['test'] = [np.zeros([n_neurons_decoder, n_trials_test]) for i in range(n_timepoints)]
+
+        for i_neuron, neuron in enumerate(neurons):
+            data = all_data[neuron]
+
+            # Organize neuron's data by category and training/testing trials
+            X_data, X_data_sorted = {}, {}
+            y_data, y_data_sorted = {}, {}
+
+            min_nt = min([len(data[i]) for i in curr_dirs])
+
+            if min_nt >= n_trials:
+                inds = np.vstack([np.random.choice(len(data[i]), min_nt, replace= False) for i in curr_dirs])
+                Y = np.hstack([np.full(min_nt, i) for i in curr_dirs])
+            else:
+                inds = np.vstack([np.random.choice(len(data[i]), n_trials, replace= False) if len(data[i]) >= n_trials else np.random.choice(len(data[i]), n_trials, replace= True) for i in curr_dirs])
+                Y = np.hstack([np.full(n_trials, i) for i in curr_dirs])
+
+            if n_timepoints == 1:
+                X = np.hstack([data[val][inds[i]] for i, val in enumerate(curr_dirs)])
+            else:
+                X = np.vstack([data[val][inds[i]] for i, val in enumerate(curr_dirs)])
+
+            #X_data['train'], X_data['test'], y_data['train'], y_data['test'] = train_test_split(X, Y, train_size = n_trials_train, test_size = n_trials_test, stratify=Y)
+
+            sss = StratifiedShuffleSplit(n_splits = 1, train_size = n_trials_train, test_size = n_trials_test)
+            for train_index, test_index in sss.split(X, Y):
+                X_data['train'], X_data['test'] = X[train_index], X[test_index]
+                y_data['train'], y_data['test'] = Y[train_index], Y[test_index]
+
+            for group in groups:
+                sort = sorted([(e, i) for i, e in enumerate(y_data[group])])
+                y_data_sorted[group] = [i[0] for i in sort]
+                sorted_inds = [i[1] for i in sort]
+                X_data_sorted[group] = X_data[group][sorted_inds]
+
+                if n_timepoints == 1:
+                    svm_data[group][0][i_neuron][:] = np.hstack(X_data_sorted[group])
+                else:
+                    for ii in range(n_timepoints):
+                        svm_data[group][ii][i_neuron][:] = X_data_sorted[group][:, ii]
+
+        # Run decoder
+        perf = np.zeros([len(decoder_timepoints)])
+
+        for i_timepoint, timepoint in enumerate(decoder_timepoints):
+
+            clf.fit(svm_data['train'][timepoint].T, y_data_sorted['train'])
+
+            pred = clf.predict(svm_data['test'][timepoint].T)
+            perf[i_timepoint] = sum(pred == y_data_sorted['test'])/len(y_data_sorted['test'])*100
+
+        perf_all[iteration] = perf
+
+
+    return perf_all
+
+def run_decoder_pv_epoch(filelist, decoder_type, n_trials, n_iter, timepoints, indx1, indx2):
+
+    # Pre-allocate
+    spikes_all = {'PV':[], 'DMC':[]}
+    perf_all = {}
+
+    n_neurons = len(filelist)
+
+    for file in filelist:
+        data = sio.loadmat(file)
+
+        spikes_all['PV'].append([np.mean(data['spikes_binned_pv'].flatten()[i][:, indx1:indx2], 1) for i in range(N_DIRS)])
+        spikes_all['DMC'].append([np.mean(data['spikes_binned_dmc'].flatten()[i][:, indx1:indx2], 1) for i in range(N_DIRS)])
+
+    for task in tasks:
+        if decoder_type == 'cat':
+            perf_all[task] = np.hstack(category_decoder(spikes_all[task], n_iter, timepoints, n_neurons, n_neurons, n_trials))
+        elif decoder_type == 'dir':
+            perf_all[task] = np.hstack(direction_decoder(spikes_all[task], n_iter, timepoints, n_neurons, n_neurons, n_trials))
+
+    return perf_all
+
+def run_decoder_dmc(area, filelist, bins, n_iter, decoder_type, n_trials, n_neurons_decoder, n_neurons_total):
+
+    timepoints = np.arange(0, len(bins))
+
+    # Pre-allocate
+    decoder_all, decoder_mean, decoder_std = {}, {}, {}
+    spikes_all = []
+
+    for file in filelist:
+        data = sio.loadmat(file)
+        data_by_cond = data['binned_spikes'].flatten()
+        data_by_dir = org_data_by_dir(data_by_cond)
+
+        spikes_all.append(data_by_dir)
+
+    if decoder_type == 'cat':
+        perf = category_decoder(spikes_all, n_iter, timepoints, n_neurons_decoder, n_neurons_total, n_trials)
+    elif decoder_type == 'dir':
+        perf = direction_decoder(spikes_all, n_iter, timepoints, n_neurons_decoder, n_neurons_total, n_trials)
+
+    perf_mean = np.mean(perf, 0)
+    perf_std = np.std(perf, 0)
+
+    decoder_mean[area] = perf_mean
+    decoder_std[area] = perf_std
+    decoder_all[area] = perf
+
+    return perf, perf_mean, perf_std
 
 """ ROC ANALYSIS """
 
@@ -971,8 +679,14 @@ def get_WC_BC_ROC(data, pairs_indx, step_size = 10):
     roc_all = np.zeros([n_pairs, n_timepoints_stepped])
 
     for i_pair in range(n_pairs):
-        dir1 = data[pairs_indx[i_pair][0]]
-        dir2 = data[pairs_indx[i_pair][1]]
+
+        dir1_all = data[pairs_indx[i_pair][0]]
+        dir2_all = data[pairs_indx[i_pair][1]]
+
+        min_nt = min([len(dir1_all), len(dir2_all)])
+
+        dir1 = dir1_all[np.random.choice(len(dir1_all), min_nt, replace = False), :]
+        dir2 = dir2_all[np.random.choice(len(dir2_all), min_nt, replace = False), :]
 
         for i, timepoint in enumerate(np.arange(0, n_timepoints_total, step_size)):
             y_true = np.hstack([np.zeros(np.size(dir1, 0)), np.ones(np.size(dir2, 0))])
@@ -984,7 +698,6 @@ def get_WC_BC_ROC(data, pairs_indx, step_size = 10):
     mean_roc = np.mean(roc_all, 0)
 
     return roc_all, mean_roc
-
 
 def get_WC_BC_ROC_epoch(data, pairs_indx):
 
@@ -1007,295 +720,192 @@ def get_WC_BC_ROC_epoch(data, pairs_indx):
     return roc_all, mean_roc
 
 """ PASSIVE VIEWING FUNCTIONS """
-def passive_viewing_analysis(fname, area, monkey, timepoints, savepath):
 
-    dirs = np.array([247.5, 225, 202.5, 67.5, 45, 22.5, 157.5, 135, 112.5, 337.5, 315, 292.5])
+def passive_viewing_analysis_main(fname, window, bin_size, savepath, area, monkey, exclude_stim1, min_ntrials):
+    # Load data
+    bhv = sio.loadmat(fname)['data']['BHV']
+    neuro = sio.loadmat(fname)['data']['NEURO']
 
-    center_inds = [i for i, val in enumerate(dirs) if isinstance(val, int)]
-    border_inds = [3, 8, 6, 9, 0, 5, 2, 11]
-
-
-    BCD_pairs = [[22.5, 157.5], [112.5, 247.5], [202.5, 337.5], [292.5, 67.5], [67.5, 112.5], [157.5, 202.5], [247.5, 292.5], [337.5, 22.5]]
-    BCD_pairs_indx = [[np.where(dirs == i[0])[0][0], np.where(dirs == i[1])[0][0]] for i in BCD_pairs]
-
-    WCD_pairs = [[337.5, 112.5], [157.5, 292.5], [67.5, 202.5], [247.5, 22.5], [22.5, 67.5], [202.5, 247.5], [112.5, 157.5], [292.5, 337.5]]
-    WCD_pairs_indx = [[np.where(dirs == i[0])[0][0], np.where(dirs == i[1])[0][0]] for i in WCD_pairs]
-
-
-    pv_mean_rate = []
-    dmc_mean_rate = []
-
-    dmc_border = []
-    dmc_center = []
-
-    corrs = []
-
-    rCTI_pv = []
-    rCTI_dmc = []
-
-    dmc = []
-    pv = []
-
-    spikes_binned_dmc_all = []
-    spikes_binned_pv_all = []
-
-
-    im_set = ('Stim_Filename_1', 'Stim_Filename_2', 'Stim_Filename_3', 'Stim_Filename_4', 'Stim_Filename_5')
-
-    data  = sio.loadmat(fname)['data']
-
-    bhv   = data['BHV']
-    neuro = data['NEURO']
-
-    # Load the file specified by fn
     monkey_name = fname[0:7]
-    date        = fname[8:18]
+    date = fname[8:18]
 
     # Extract relevant behavioral variables for all the trials
-    error     = bhv[0][0][0][0]["TrialError"]
-    trial_num = len(bhv[0][0][0][0]["TrialNumber"][0])
-    condition = bhv[0][0][0][0]["ConditionNumber"][0]
+    errors = bhv[0][0][0][0]["TrialError"]
+    corr_trials = np.where(errors == 0)[0]
+    trial_nums = len(bhv[0][0][0][0]["TrialNumber"][0])
+    conditions = bhv[0][0][0][0]["ConditionNumber"][0]
 
+    # Extract relevant neural data for all the trials
+    n_neurons = len([i for i in neuro[0][0][0][0][1][0][0].dtype.names if 'wf' not in i])
+    spikes_all = neuro[0][0][0][0]["Neuron"][0][0]
+    code_times = neuro[0][0][0][0]['CodeTimes']
+    code_numbers= np.array([i[0] for i in neuro[0][0][0][0]['CodeNumbers']])
 
-    # Do the same for neural data
-    if area == 'MT':
-        num_neurons = len(neuro[0][0][0][0]["Neuron"][0][0])//2
-    else:
-        num_neurons = len(neuro[0][0][0][0]["Neuron"][0][0])
-    spikes_all  = neuro[0][0][0][0]["Neuron"][0][0]
-    code_time   = neuro[0][0][0][0]['CodeTimes']
-    code_num    = neuro[0][0][0][0]['CodeNumbers']
-    code_num    = np.array([i[0] for i in code_num])
+    strt_trial_indx = np.where(code_numbers == STRT_TRIAL)[0]
+    strt_trial_time = code_times[strt_trial_indx]
+    end_trial_indx = np.where(code_numbers == END_TRIAL)[0]
 
+    # Get PV trial information
+    trials_pv = np.where(conditions == PV_COND)[0]
+    corr_trials_pv = [i for i, val in enumerate(trials_pv) if val in corr_trials]
+    [pv_dirs, trial_counts_per_dir] = get_passive_viewing_dirs(bhv, trials_pv, corr_trials_pv)
 
-    strt_trial_indx = np.where(code_num == STRT_TRIAL)[0]
-    strt_trial_time = code_time[strt_trial_indx]
+    # Get DMC trial information
+    trials_dmc = np.where(conditions != PV_COND)[0]
+    corr_trials_dmc = [i for i in trials_dmc if i in corr_trials]
 
-    end_trial_indx = np.where(code_num == END_TRIAL)[0]
+    # Only take datasets with >= 5 trials per direction
+    if all(i >= min_ntrials for i in trial_counts_per_dir):
 
-    #Get direction from PV filenames
-    pv_trials = np.where (condition == 73)[0]
-    #correct_trials = np.where(error == 0)[0]
-    #pv_0_trials = [value for value in pv_trials if value in correct_trials]
-    pv_0_trials = [value for value in pv_trials]
-    pass_view_dirs = [[] for i in range(len(pv_0_trials))]
+        for i_neuron in range(n_neurons):
+            neuron_name = neuro[0][0][0][0][1][0][0].dtype.names[i_neuron]
 
-    for i, i_trial in enumerate (pv_0_trials):
+            # If neuron is task-responsive
+            if path.exists('E:\\two_boundary\\data\\' + monkey + '\\' + area + '\\good_neurons\\task_responsive\\' + date + '_' + neuron_name + '.mat'):
+
+                # Get current neuron's spikes
+                spikes = spikes_all[i_neuron].flatten()
+
+                # Passive viewing
+                [spikes_raw_pv, spikes_binned_pv, window_mean_pv, window_sem_pv] = get_spikes_pv(spikes, trials_pv, corr_trials_pv, pv_dirs, window, code_times, code_numbers, strt_trial_indx, end_trial_indx, exclude_stim1, bin_size)
+
+                # DMC
+                [spikes_raw_dmc, spikes_binned_dmc, window_mean_dmc, window_sem_dmc] = get_spikes_dmc(spikes, corr_trials_dmc, pv_dirs, window, code_times, code_numbers, conditions, strt_trial_indx, end_trial_indx, strt_trial_time, exclude_stim1, bin_size)
+
+                if exclude_stim1:
+                    curr_path = savepath + 'stim1_excluded\\' + 'window_' + str(window[0]) + '_' + str(window[-1]) + '\\'
+                else:
+                    curr_path = savepath + 'stim1_included\\'+ 'window_' + str(window[0]) + '_' + str(window[-1]) + '\\'
+
+                make_dirs(curr_path)
+                fname_data = curr_path + date + '_' + neuron_name + '.mat'
+
+                sp.io.savemat(fname_data,  {'spikes_raw_pv': spikes_raw_pv, 'spikes_binned_pv': spikes_binned_pv, 'window_mean_pv': window_mean_pv, 'window_sem_pv': window_sem_pv,
+                                            'spikes_raw_dmc': spikes_raw_dmc, 'spikes_binned_dmc': spikes_binned_dmc, 'window_mean_dmc': window_mean_dmc, 'window_sem_dmc': window_sem_dmc})
+
+def get_spikes_dmc(spikes, corr_trials_dmc, pv_dirs, window, code_times, code_numbers, conditions, strt_trial_indx, end_trial_indx, strt_trial_time, exclude_stim1, bin_size):
+
+   # Pre-allocate
+    spikes_raw_dmc = [[] for i in range(N_DIRS)]
+    spikes_binned_dmc = [[] for i in range(N_DIRS)]
+
+    # Loop through trials
+    for i_trial in corr_trials_dmc:
+
+        if code_numbers[strt_trial_indx[i_trial]+1] != MS_STIM_ON:
+
+            if (strt_trial_time[i_trial] > spikes[0]) and (strt_trial_time[i_trial] < spikes[-1]):
+
+                # Compute when the stimulus for this trial came on
+                stim_on_indx = np.where(code_numbers[strt_trial_indx[i_trial]:end_trial_indx[i_trial]] == SAMP_ON)[0]
+                stim_on_indx = stim_on_indx + strt_trial_indx[i_trial]
+
+                # Find spike times for this trial based on stim. on index, compute histogram
+                stim_on_time = code_times[stim_on_indx][0]
+
+                t1 = spikes[spikes > stim_on_time + (window[0])]
+                t2 =  spikes[spikes < stim_on_time + (window[-1]+1)]
+                spike_times = np.intersect1d(t1, t2) - stim_on_time
+
+                hist_spks = np.histogram(spike_times, window)[0]
+
+                # Store the histogram for this trial
+                dir_num = int(np.ceil(conditions[i_trial]/6)) - 1
+                spikes_raw_dmc[dir_num].append(hist_spks)
+                spikes_binned_dmc[dir_num].append(np.convolve(hist_spks, np.ones(100), 'same'))
+
+            # Take averages by direction
+            spikes_raw_mean = [np.array(i).squeeze().mean(axis=0) for i in spikes_raw_dmc]
+            spikes_binned_mean  = [np.array(i).squeeze().mean(axis=0) for i in spikes_binned_dmc]
+
+            window_mean_dmc = np.zeros_like(DIRS)
+            window_sem_dmc = np.zeros_like(DIRS)
+
+            for i_dir in range(N_DIRS):
+                tmp = np.array(spikes_raw_dmc[i_dir])*1000
+                mean_across_trials_dmc = np.mean(tmp, 0)
+
+                window_mean_dmc[i_dir] = np.mean(mean_across_trials_dmc)
+                window_sem_dmc[i_dir] = stats.sem(mean_across_trials_dmc)
+
+    return spikes_raw_dmc, spikes_binned_dmc, window_mean_dmc, window_sem_dmc
+
+def get_spikes_pv(spikes, trials_pv, corr_trials_pv, pv_dirs, window, code_times, code_numbers, strt_trial_indx, end_trial_indx, exclude_stim1, bin_size):
+
+    # Pre-allocate
+    spikes_raw_pv = [[] for i in range(N_DIRS)]
+    spikes_binned_pv = [[] for i in range(N_DIRS)]
+
+    for i_trial, trial_num in enumerate(trials_pv):
+        curr_stims = pv_dirs[i_trial]
+        stim_on_inds = np.where(code_numbers[strt_trial_indx[trial_num]:end_trial_indx[trial_num]] == PV_STIM_ON)[0]
+        stim_on_inds = stim_on_inds + strt_trial_indx[trial_num]
+
+        # For incomplete trials, get rid of last stimulus (likely not seen for full 400ms)
+        if i_trial not in corr_trials_pv:
+            stim_on_inds = stim_on_inds[0:-1]
+            curr_stims = curr_stims[0:-1]
+
+        if len(stim_on_inds) > 0 and exclude_stim1:
+            stim_on_inds = stim_on_inds[1:]
+            curr_stims = curr_stims[1:]
+
+        n_stimuli = len(stim_on_inds)
+
+        if n_stimuli > 0:
+            stim_on_times = code_times[stim_on_inds].flatten()
+
+            for i_stim, stim_on in enumerate(stim_on_times):
+                t1 = spikes[spikes > stim_on+(window[0])]
+                t2 =  spikes[spikes < stim_on+(window[-1]+1)]
+                spike_times = np.intersect1d(t1, t2) - stim_on
+
+                hist_spks = np.histogram(spike_times, window)[0]
+
+                dir_num = int(curr_stims[i_stim])
+                spikes_raw_pv[dir_num].append(hist_spks)
+                spikes_binned_pv[dir_num].append(np.convolve(hist_spks, np.ones(bin_size), 'same'))
+
+    spikes_raw_mean = [np.array(i).squeeze().mean(axis=0) for i in spikes_raw_pv]
+    spikes_binned_mean = [np.array(i).squeeze().mean(axis=0) for i in spikes_binned_pv]
+
+    # Get mean firing rate for entire window
+    window_mean_pv = np.zeros_like(DIRS)
+    window_sem_pv = np.zeros_like(DIRS)
+
+    for i_dir in range(N_DIRS):
+        tmp = np.array(spikes_raw_mean[i_dir])
+        mean_across_trials = np.mean(tmp, 0)*1000
+
+        window_mean_pv[i_dir] = np.mean(mean_across_trials)
+        window_sem_pv[i_dir] = stats.sem(mean_across_trials)
+
+    return spikes_raw_pv, spikes_binned_pv, window_mean_pv, window_sem_pv
+
+def get_passive_viewing_dirs(bhv, trials_pv, corr_trials_pv):
+
+    # PV stimulus names in BHV file
+    im_set = ('Stim_Filename_1', 'Stim_Filename_2', 'Stim_Filename_3', 'Stim_Filename_4', 'Stim_Filename_5')
+
+    # Pre-allocate
+    pv_dirs = [[] for i in range(len(trials_pv))]
+
+    # Get direction shown on each trial from stimulus filename
+    for i, i_trial in enumerate(trials_pv):
         for i_im in im_set:
             if len(bhv[0][0][0][0]["UserVars"][0][i_trial][i_im]) > 0:
                 if len(bhv[0][0][0][0]["UserVars"][0][i_trial][i_im][0]) > 4:
                     file_split1 = (bhv[0][0][0][0]["UserVars"][0][i_trial][i_im][0]).split('\\')
                     file_split2 = file_split1[-1].split('_')
-                    pass_view_dirs[i].append(int(file_split2[-2])-1)
+                    if len(file_split2) == 5:
+                        pv_dirs[i].append(int(file_split2[-1][:-8]))
+                    else:
+                        pv_dirs[i].append(int(file_split2[-2])-1)
 
-    pass_view_dirs = [row if len(row) == 5 else [] if len(row) < 2 else row[0:-1] for row in pass_view_dirs]
-
-    #Count number of PV trials per dir
-    merged = list(itertools.chain.from_iterable(pass_view_dirs))
+    # Count number of PV trials per dir
+    merged = list(itertools.chain.from_iterable(pv_dirs))
     counts = []
-    for i_value in range (len(dirs)):
+    for i_value in range(N_DIRS):
         counts.append(merged.count(i_value))
-    #only take Data sets with >= 5  trials per direction
-    if all(i >= 10 for i in counts):
 
-
-        #DMC task
-        # Correct trial IDs (DMC)
-        correct_inds   = set(np.where(error == 0)[0])
-        condition_inds = set(np.where(condition != 73)[0])
-        trial_inds = correct_inds.intersection(condition_inds)
-
-        for i_neuron in range(num_neurons):
-            spikes_binned_pv = [[] for i in range(len(dirs))]
-            spikes_100_pv = [[] for i in range(len(dirs))]
-            neuron_spikes = spikes_all[i_neuron].flatten()
-            neuron_name   = neuro[0][0][0][0][1][0][0].dtype.names[i_neuron]
-            rating        = neuro[0][0][0][0][-1][i_neuron][1][0][0]
-
-            for i, trial_number in enumerate(pv_0_trials):
-
-                n_stimuli = len(pass_view_dirs[i])
-
-                if n_stimuli > 0:
-
-                    stim1_on_indx = np.where(code_num[strt_trial_indx[trial_number]:end_trial_indx[trial_number]] == PV_STIM_ON)[0]
-                    if len(stim1_on_indx) > 1:
-                        stim1_on_indx = stim1_on_indx[0]
-                    stim1_on_indx = stim1_on_indx + strt_trial_indx[trial_number]
-                    stim1_on_time = code_time[stim1_on_indx].flatten()[0]
-
-                    for i_stim in range(n_stimuli):
-
-                        stim_on_time = stim1_on_time + (i_stim*600)
-
-                        spks = neuron_spikes[(neuron_spikes - stim_on_time > timepoints[0]) & (neuron_spikes - stim_on_time < timepoints[-1]+1)] - stim_on_time
-                        hist_spks = np.histogram(spks, timepoints)[0]
-
-                        dir_num = int(pass_view_dirs[i][i_stim])
-                        spikes_binned_pv[dir_num].append(hist_spks)
-                        spikes_100_pv[dir_num].append(np.convolve(hist_spks, np.ones(100), 'same'))
-
-            avg_binned = [np.array(i).squeeze().mean(axis=0) for i in spikes_binned_pv]
-
-            pv_flat_avg = np.zeros_like(dirs)
-            sem_pv_flat_avg = np.zeros_like(dirs)
-
-            for i_dir in range(12):
-                tmp = np.array(spikes_binned_pv[i_dir])*1000
-                mean_across_trials = np.mean(tmp, 1)
-
-                pv_flat_avg[i_dir] = np.mean(mean_across_trials)
-                sem_pv_flat_avg[i_dir] = stats.sem(mean_across_trials)
-
-
-
-            #DMC--------
-            # Set up storage for spikes by direction
-            spikes_binned_dmc = [[] for i in range(len(dirs))]
-            spikes_100_dmc = [[] for i in range(len(dirs))]
-
-            # Loop through trials
-            for i_trial in trial_inds:
-                if code_num[strt_trial_indx[i_trial]+1] != 14:
-
-                    # Compute when the stimulus for this trial came on
-                    stim_on_indx = np.where(code_num[strt_trial_indx[i_trial]:end_trial_indx[i_trial]] == STIM_ON)[0]
-                    stim_on_indx = stim_on_indx + strt_trial_indx[i_trial]
-
-                    # Find spike times for this trial based on stim. on index, compute histogram
-                    stim_on_time = code_time[stim_on_indx].flatten()[0]
-                    spks         = neuron_spikes[(neuron_spikes - stim_on_time > timepoints[0]) & (neuron_spikes - stim_on_time < timepoints[-1]+1)] - stim_on_time
-                    hist_spks    = np.histogram(spks, timepoints)[0]
-
-                    # Store the histogram for this trial
-                    dir_num = int(np.ceil(condition[i_trial]/6)) - 1
-                    spikes_binned_dmc[dir_num].append(hist_spks)
-                    spikes_100_dmc[dir_num].append(np.convolve(hist_spks, np.ones(100), 'same'))
-
-
-            # Take averages by direction
-            dmc_avg_spikes = np.array([np.array(i).squeeze().mean(axis=0) for i in spikes_binned_dmc])
-
-            #Take avg across entirety of sample period DMC
-
-            #dmc_sample_avg_spikes = np.array([np.mean(i, axis = 0)*1000 for i in dmc_avg_spikes])
-            #sem_dmc_sample_spikes = np.array([stats.sem(i)*1000 for i in dmc_avg_spikes])
-
-            dmc_sample_avg_spikes = np.zeros_like(dirs)
-            sem_dmc_sample_spikes = np.zeros_like(dirs)
-
-            for i_dir in range(12):
-                tmp = np.array(spikes_binned_dmc[i_dir])*1000
-                mean_across_trials_dmc = np.mean(tmp, 1)
-
-                dmc_sample_avg_spikes[i_dir] = np.mean(mean_across_trials_dmc)
-                sem_dmc_sample_spikes[i_dir] = stats.sem(mean_across_trials_dmc)
-
-
-            #Order directions & directional outputs from 0-360
-
-            #order stuff
-            ord_ind = np.argsort(dirs)
-            dmc_sample_avg_spikes_ord = [dmc_sample_avg_spikes[i] for i in ord_ind]
-            dmc_sem_sample_spikes_ord = [sem_dmc_sample_spikes[i] for i in ord_ind]
-            pv_flat_avg_ord = [pv_flat_avg[i] for i in ord_ind]
-            sem_pv_flat_avg_ord = [sem_pv_flat_avg[i] for i in ord_ind]
-            ord_dirs = [dirs[i] for i in ord_ind]
-
-            #find max to make y axis even
-            max_fr = np.maximum(np.amax(dmc_sample_avg_spikes_ord),np.amax(pv_flat_avg_ord))
-
-            objects = [str(i) for i in ord_dirs]
-            y_pos = np.arange(len(objects))
-
-
-            if path.exists('E:\\two_boundary\\data\\' + monkey + '\\' + area + '\\good_neurons\\task_responsive\\' + date + '_' + neuron_name + '.mat'): #rating >= 2.5:
-
-
-                ############# rCTI
-
-                epoch_mean_pv = [[] for i in range(12)]
-                for ii in range(12):
-                    data = spikes_binned_pv[ii]
-                    epoch_mean_pv[ii] = ([np.array(i).squeeze().mean(axis=0)*1000 for i in data])
-
-                epoch_mean_dmc = [[] for i in range(12)]
-                for ii in range(12):
-                    data = spikes_binned_dmc[ii]
-                    epoch_mean_dmc[ii] = ([np.array(i).squeeze().mean(axis=0)*1000 for i in data])
-
-                [WCD_roc_all, WCD_roc_pv] = get_WC_BC_ROC_epoch(epoch_mean_pv, WCD_pairs_indx)
-                [BCD_roc_all, BCD_roc_pv] = get_WC_BC_ROC_epoch(epoch_mean_pv, BCD_pairs_indx)
-
-                [WCD_roc_all, WCD_roc_dmc] = get_WC_BC_ROC_epoch(epoch_mean_dmc, WCD_pairs_indx)
-                [BCD_roc_all, BCD_roc_dmc] = get_WC_BC_ROC_epoch(epoch_mean_dmc, BCD_pairs_indx)
-
-                rCTI_pv.append(BCD_roc_pv-WCD_roc_pv)
-                rCTI_dmc.append(BCD_roc_dmc-WCD_roc_dmc)
-
-                dmc.append(epoch_mean_dmc)
-                pv.append(epoch_mean_pv)
-                #print(BCD_roc_pv-WCD_roc_pv)
-                #print(BCD_roc_dmc-WCD_roc_dmc)
-
-                ###################
-
-
-                pv_mean_rate.append(np.mean(pv_flat_avg))
-                dmc_mean_rate.append(np.mean(dmc_sample_avg_spikes))
-
-                dmc_mean_rate.append(np.mean(dmc_sample_avg_spikes))
-
-                dmc_border.append(np.mean(np.array(dmc_sample_avg_spikes_ord)[border_inds]))
-                dmc_center.append(np.mean(np.array(dmc_sample_avg_spikes_ord)[center_inds]))
-
-                corrs.append(np.corrcoef(pv_flat_avg, dmc_sample_avg_spikes)[0][1])
-
-                spikes_binned_dmc_all.append(spikes_100_dmc)
-                spikes_binned_pv_all.append(spikes_100_pv)
-
-                '''
-                fig = plt.figure(figsize=(5, 3))
-                ax = fig.add_axes([1,1,1,1])
-
-                ax.errorbar(y_pos, dmc_sample_avg_spikes_ord, dmc_sem_sample_spikes_ord, fmt='-o', color = 'k', label = 'DMC')
-                #ax.errorbar(y_pos, pv_flat_avg_ord, sem_pv_flat_avg_ord,  fmt='--o', color = 'lightslategrey', label = 'PV')
-                ax.set(xticks = y_pos, xticklabels = objects, ylim =( 0, max_fr+(max_fr*.3)))
-
-                ax.set_xlabel('Direction', fontsize = 20)
-                ax.set_ylabel('Firing rate (Hz)', fontsize = 20)
-
-                #ax.legend(frameon = False, fontsize = 20)
-                plt.xticks(fontsize=22, rotation=0)
-                plt.yticks(fontsize=22, rotation=0)
-
-                xtick_dirs = [ord_dirs[i] for i in np.arange(1, 11, 3)]
-                ax.set_xticks(np.arange(1, 11, 3))
-                ax.set(xticklabels = xtick_dirs)
-
-                # Hide the right and top spines
-                ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)
-
-                ax.axvspan(0, 2, alpha = 0.1, color = '#3891A6', zorder=1)
-                ax.axvspan(6, 8, alpha = 0.1, color = '#3891A6', zorder=2)
-
-                ax.axvspan(3, 5, alpha = 0.1, color = '#DB6C79', zorder=1)
-                ax.axvspan(9, 11, alpha = 0.1, color = '#DB6C79', zorder=2)
-
-                plt.tick_params(labelsize=20)
-
-                #plt.show()
-
-                fname_fig = savepath + 'PV_{}_{}_{}_{}.png'.format(area, monkey_name, date, neuron_name)
-
-                fig.savefig(fname_fig, bbox_inches='tight', dpi=500)
-
-                plt.close()
-                '''
-
-            else:
-                epoch_mean_dmc = np.nan
-                epoch_mean_pv = np.nan
-
-    return pv_mean_rate, dmc_mean_rate, spikes_binned_dmc_all, spikes_binned_pv_all, corrs, dmc, pv
+    return pv_dirs, counts
